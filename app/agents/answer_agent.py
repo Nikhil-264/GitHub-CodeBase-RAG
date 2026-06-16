@@ -1,0 +1,203 @@
+"""
+Answer Agent
+============
+Takes the analysis brief + reranked chunks and generates
+a final answer using the LLM.
+
+Prompt structure:
+    [System instructions]
+    [Context summary from Analysis Agent]
+    [Code chunks with file labels]
+    [User question]
+    → Answer
+"""
+
+import os
+from loguru import logger
+from dotenv import load_dotenv
+from langchain_ollama import OllamaLLM
+
+load_dotenv()
+
+LLM_MODEL  = os.getenv("LLM_MODEL",       "qwen3")
+OLLAMA_URL = os.getenv("OLLAMA_BASE_URL",  "http://localhost:11434")
+
+
+# ════════════════════════════════════════════════════════════
+# Prompt templates
+# ════════════════════════════════════════════════════════════
+
+_SYSTEM_PROMPT = """You are an expert code analyst helping developers understand codebases.
+
+Rules:
+- Answer using ONLY the provided code context. Do not guess or hallucinate.
+- Always cite the source file for every piece of information (e.g. `auth/jwt.py`).
+- If the answer spans multiple files, explain each file's role clearly.
+- If the context does not contain enough information, say so explicitly.
+- Format code references using backticks.
+- Be concise but complete."""
+
+
+_INTENT_INSTRUCTIONS = {
+    "code_search" : "Point to the exact file and line range where it is defined or used.",
+    "explain"     : "Give a clear conceptual explanation, then back it up with the relevant code.",
+    "trace_flow"  : "Walk through the execution step by step, file by file, in order.",
+    "architecture": "Give a high-level overview of how the files and modules are organised.",
+    "debug"       : "Identify what could cause the issue and where in the code it originates.",
+}
+
+
+# ════════════════════════════════════════════════════════════
+# LLM singleton
+# ════════════════════════════════════════════════════════════
+
+_llm: OllamaLLM | None = None
+
+
+def _get_llm() -> OllamaLLM:
+    global _llm
+    if _llm is None:
+        logger.info(f"Loading LLM: {LLM_MODEL} @ {OLLAMA_URL}")
+        _llm = OllamaLLM(
+            model       = LLM_MODEL,
+            base_url    = OLLAMA_URL,
+            temperature = 0.1,    # slight creativity for explanations
+        )
+    return _llm
+
+
+# ════════════════════════════════════════════════════════════
+# Prompt builder
+# ════════════════════════════════════════════════════════════
+
+def _build_prompt(brief: dict, intent: str, chat_history: str = "") -> str:
+    question        = brief["question"]
+    chunks          = brief["chunks"]
+    context_summary = brief["context_summary"]
+
+    intent_instruction = _INTENT_INSTRUCTIONS.get(intent, "Answer clearly and completely.")
+
+    context_parts = []
+    for chunk in chunks:
+        m = chunk["metadata"]
+        header = f"### File: {m['file_path']} | Lines {m.get('start_line','?')}–{m.get('end_line','?')}"
+        context_parts.append(f"{header}\n```{m.get('language','')}\n{chunk['text']}\n```")
+    code_context = "\n\n".join(context_parts)
+
+    prompt = f"""{_SYSTEM_PROMPT}
+
+─── Conversation So Far ───────────────────────────────────
+{chat_history}
+
+─── Context Summary ───────────────────────────────────────
+{context_summary}
+
+─── Code Context ──────────────────────────────────────────
+{code_context}
+
+─── Current Question ──────────────────────────────────────
+{question}
+
+─── Instructions ──────────────────────────────────────────
+{intent_instruction}
+If the current question refers to something discussed earlier (e.g. "what about X", "and that file"), use the conversation above to resolve it.
+
+Answer:"""
+    return prompt
+
+
+# ════════════════════════════════════════════════════════════
+# Public API
+# ════════════════════════════════════════════════════════════
+
+from langsmith import traceable
+
+@traceable(run_type="chain")
+def answer(brief: dict, intent: str = "explain", chat_history: str = "") -> dict:
+    """
+    Generate a final answer from the analysis brief.
+
+    Args:
+        brief  : output of analysis_agent.analyse()
+        intent : classified intent string
+
+    Returns:
+    {
+        "answer"       : str,          # the LLM's response
+        "sources"      : list[str],    # unique file paths cited
+        "chunks_used"  : int,
+        "intent"       : str,
+        "primary_files": list[str],
+    }
+    """
+    if not brief["chunks"]:
+        return {
+            "answer"        : "I could not find relevant code for your question. Try rephrasing or indexing the repository first.",
+            "sources"       : [],
+            "chunks_used"   : 0,
+            "intent"        : intent,
+            "primary_files" : [],
+        }
+
+    prompt = _build_prompt(brief, intent, chat_history)
+
+    logger.info(f"Generating answer | intent={intent} | chunks={len(brief['chunks'])}")
+    logger.debug(f"Prompt length: {len(prompt)} chars")
+
+    try:
+        llm      = _get_llm()
+        response = llm.invoke(prompt)
+    except Exception as e:
+        logger.error(f"LLM call failed: {e}")
+        return {
+            "answer"        : f"LLM error: {e}",
+            "sources"       : [],
+            "chunks_used"   : 0,
+            "intent"        : intent,
+            "primary_files" : brief["primary_files"],
+        }
+
+    sources = sorted({
+        c["metadata"]["file_path"]
+        for c in brief["chunks"]
+    })
+
+    result = {
+        "answer"        : response.strip(),
+        "sources"       : sources,
+        "chunks_used"   : len(brief["chunks"]),
+        "intent"        : intent,
+        "primary_files" : brief["primary_files"],
+    }
+
+    logger.success(f"Answer generated | {len(sources)} source files cited")
+    return result
+
+
+if __name__ == "__main__":
+    # Minimal smoke test
+    dummy_brief = {
+        "question"        : "Where is JWT generated?",
+        "chunks"          : [
+            {
+                "text"     : "def generate_token(user_id):\n    return jwt.encode({'sub': user_id}, SECRET)",
+                "metadata" : {
+                    "file_path"  : "auth/jwt.py",
+                    "chunk_name" : "generate_token",
+                    "chunk_type" : "function_definition",
+                    "start_line" : 1,
+                    "end_line"   : 3,
+                    "language"   : "py",
+                },
+            }
+        ],
+        "file_map"        : {"auth/jwt.py": [{"chunk_name": "generate_token"}]},
+        "cross_refs"      : [],
+        "primary_files"   : ["auth/jwt.py"],
+        "languages"       : ["py"],
+        "context_summary" : "Most relevant file: auth/jwt.py",
+    }
+
+    result = answer(dummy_brief, intent="code_search")
+    print(f"\nAnswer:\n{result['answer']}")
+    print(f"\nSources: {result['sources']}")
