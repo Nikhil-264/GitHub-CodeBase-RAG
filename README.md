@@ -8,41 +8,55 @@ The application utilizes **Hybrid Search (Vector + Lexical)** with **Reciprocal 
 
 ## 🏗️ Architecture & Pipeline Flow
 
-The application is structured into a stateful workflow managed by **LangGraph**:
+The application is structured into a stateful workflow managed by **LangGraph** with advanced verification steps:
 
 ```
-           [User Chat Query]
-                   │
-                   ▼
-         [Intent Classification] (Intent Agent)
-                   │
-                   ▼
-     [Hybrid Search (Vector + BM25)] (Retrieval Agent)
-                   │
-                   ▼
-        [Cross-Encoder Rerank] (Reranker)
-                   │
-                   ▼
-       [Context Mapping & AST] (Analysis Agent)
-                   │
-                   ▼
-       [Response Generation] (Answer Agent via Ollama)
-                   │
-                   ▼
-  [Postgres Message Storage & Response]
+                                 [User Chat Query]
+                                         │
+                                         ▼
+                               [Intent Classifier]
+                                         │
+                 ┌───────────────────────┴───────────────────────┐
+                 │ (Codebase Context?)                           │ (No)
+                 ▼                                               ▼
+         [Retrieval Agent]                              [Direct LLM Answer]
+                 │                                               │
+                 ▼                                               │
+             [Reranker]                                          │
+                 │                                               │
+                 ▼                                               │
+        [Document Grader] (CRAG)                                 │
+                 │                                               │
+                 ├──────────────────────────────┐ (Irrelevant)   │
+                 ▼ (Relevant Chunks Found)      ▼                │
+         [Analysis Agent]               [Query Rewrite]          │
+                 │                              │                │
+                 ▼                              └─► (Retry Once) │
+          [Answer Agent] ◄──────────────┐                        │
+                 │                      │ (Regenerate)           │
+                 ▼                      │                        │
+         [Self-RAG Critique] ───────────┘                        │
+                 │                                               │
+                 └──────────────────────┬────────────────────────┘
+                                        ▼
+                              [Response & Postgres DB]
 ```
 
 1. **Ingestion**: Clones a repository, scans it for 20+ programming languages, chunks code with **tree-sitter AST nodes** (or regex fallbacks), creates vector embeddings in **ChromaDB**, and builds a **BM25 lexical index** for keyword search.
-2. **Retrieval**: Leverages the classified intent to run RRF-based hybrid retrieval combining ChromaDB cosine similarity and BM25 matches.
-3. **Rerank**: Prioritizes candidates using a local sentence-transformers Cross-Encoder.
-4. **Analysis & Generation**: Maps imports and dependencies across retrieved chunks, builds a context brief, and triggers Ollama (running `qwen2.5:3b` locally) to generate a response.
-5. **History**: Stores chat message history in **PostgreSQL** to inject past conversational turns into subsequent prompts.
+2. **Retrieve Gate (Self-RAG)**: Checks if the query actually needs codebase context. If it's a general coding question or greeting, it bypasses retrieval and routes directly to the direct answer node.
+3. **Retrieval & Rerank**: Leverages the classified intent to run RRF-based hybrid retrieval combining ChromaDB and BM25 matches, then prioritizes them using a Cross-Encoder.
+4. **Document Grader (CRAG)**: Evaluates each retrieved chunk's relevance to the question. If all chunks are irrelevant, it rewrites the query and retries retrieval once. Otherwise, it filters out irrelevant chunks and proceeds.
+5. **Answer Agent & Critique (Self-RAG)**: Generates a response which is graded for grounding (hallucination detection) and utility (question relevance). If it fails grounding/utility, it loops back to regenerate with a stricter factual-enforcement prompt (up to 1 retry).
+6. **History**: Stores chat message history in **PostgreSQL** to inject past conversational turns into subsequent prompts.
 
 ---
 
 ## ⚡ Features
 
 * **Local Inference**: Completely private—runs locally using Ollama (`qwen2.5:3b` and `nomic-embed-text`) and local Sentence-Transformers.
+* **Corrective RAG (CRAG)**: Intelligent document grading that auto-corrects retrieval failures via query expansion/rewrites.
+* **Self-RAG Reflection**: Dual LLM critic loops that check generated answers for hallucinations and relevance to prevent incorrect responses.
+* **Strict Mode Toggle**: Exposes a `strict_mode` parameter (default `true`) in chat endpoints. Setting `strict_mode: false` bypasses the critique and grader LLM round-trips for high-speed local queries.
 * **Persistent Session Memory**: Sidebar session picker to reload past chats or create new ones backed by PostgreSQL.
 * **Type Safety**: Fully annotated types satisfying strict compiler limits.
 * **LangSmith Tracing**: Full visual tracing integration to inspect step latencies, database inputs, and model parameters.
@@ -142,3 +156,21 @@ To quickly test the indexing, retrieval, and reranking modules directly from the
 ```bash
 python test_pipeline.py
 ```
+
+---
+
+## 📊 Evaluation Harness
+To measure the retrieval and generation quality of the system quantitatively, we provide an evaluation suite.
+
+### Running Evaluations
+1. Make sure you have ingested a repository first (e.g. via `test_pipeline.py` or the web UI).
+2. Run the evaluation runner:
+```bash
+python -m app.eval.eval_runner
+```
+
+This will run a golden test dataset of **24 complex queries** covering all 5 intents (`code_search`, `explain`, `trace_flow`, `architecture`, `debug`) targeting this codebase, and output:
+* **Retrieval Metrics**: Precision@1/3/5, Recall@1/3/5, and Mean Reciprocal Rank (MRR) by comparing the file paths of retrieved code chunks with the expected ground-truth files.
+* **Generation Metrics**: Faithfulness (groundedness/hallucination checks) and Utility (question relevance) using local LLM judges.
+* **Detailed Logs**: Saves query-by-query latency and score details in `repos/eval_results.csv` for inspection.
+
