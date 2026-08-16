@@ -309,10 +309,13 @@ def _tier1_treesitter(code: str, language: str, file_meta: dict) -> list[dict]:
     if ts_lang is None:
         return []
 
+    # Encode code to UTF-8 bytes to safely use tree-sitter's byte offsets for slicing
+    code_bytes = code.encode("utf-8")
+
     try:
         from tree_sitter import Parser
         parser = Parser(ts_lang)
-        tree   = parser.parse(bytes(code, "utf-8"))
+        tree   = parser.parse(code_bytes)
     except Exception as e:
         logger.debug(f"tree-sitter parse error: {e}")
         return []
@@ -321,8 +324,10 @@ def _tier1_treesitter(code: str, language: str, file_meta: dict) -> list[dict]:
     for node in tree.root_node.children:
         if node.type not in _AST_NODE_TYPES:
             continue
-        text = code[node.start_byte:node.end_byte]
-        name = _get_node_name(node, code)
+        # Slice using bytes and decode
+        chunk_bytes = code_bytes[node.start_byte:node.end_byte]
+        text = chunk_bytes.decode("utf-8", errors="ignore")
+        name = _get_node_name(node, code_bytes)
         chunks.append(_make_chunk(
             text=text, file_meta=file_meta,
             chunk_type=node.type, chunk_name=name,
@@ -333,28 +338,28 @@ def _tier1_treesitter(code: str, language: str, file_meta: dict) -> list[dict]:
     return chunks
 
 
-def _get_node_name(node, code: str) -> str:
+def _get_node_name(node, code_bytes: bytes) -> str:
     # Try finding typical identifier nodes
     for child in node.children:
         if child.type in ("identifier", "tag_name", "property_name", "key"):
-            return code[child.start_byte:child.end_byte]
+            return code_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="ignore")
             
     # Language-specific type extraction
     if node.type == "pair" and node.children:
         # JSON/YAML key-value pair
         key_node = node.children[0]
-        return code[key_node.start_byte:key_node.end_byte].strip("\"'")
+        return code_bytes[key_node.start_byte:key_node.end_byte].decode("utf-8", errors="ignore").strip("\"'")
         
     if node.type == "rule_set" and node.children:
         # CSS selector name
         selector_node = node.children[0]
-        return code[selector_node.start_byte:selector_node.end_byte].strip()
+        return code_bytes[selector_node.start_byte:selector_node.end_byte].decode("utf-8", errors="ignore").strip()
         
     if node.type == "section" and node.children:
         # Markdown heading name
         for child in node.children:
             if child.type == "atx_heading":
-                return code[child.start_byte:child.end_byte].strip()
+                return code_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="ignore").strip()
                 
     return "unknown"
 

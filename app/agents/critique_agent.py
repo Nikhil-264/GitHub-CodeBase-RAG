@@ -6,6 +6,7 @@ Grades generated answers for grounding (hallucination) and utility (relevance to
 """
 
 import os
+import re
 from loguru import logger
 from dotenv import load_dotenv
 from langchain_ollama import OllamaLLM
@@ -80,7 +81,16 @@ def check_grounding(answer_text: str, chunks: list[dict]) -> bool:
         prompt = _GROUNDING_PROMPT.format(context=context_text, answer=answer_text)
         response = llm.invoke(prompt).strip().lower()
         logger.info(f"Grounding Critique Response: '{response}'")
-        return "yes" in response
+        
+        # Clean response and extract words
+        cleaned = response.strip().lower()
+        if cleaned in ["yes", "no"]:
+            return cleaned == "yes"
+        
+        words = set(re.findall(r'\b\w+\b', cleaned))
+        if "no" in words:
+            return False
+        return "yes" in words
     except Exception as e:
         logger.error(f"Grounding critique check failed: {e}. Defaulting to True.")
         return True
@@ -96,7 +106,16 @@ def check_utility(answer_text: str, question: str) -> bool:
         prompt = _UTILITY_PROMPT.format(question=question, answer=answer_text)
         response = llm.invoke(prompt).strip().lower()
         logger.info(f"Utility Critique Response: '{response}'")
-        return "yes" in response
+        
+        # Clean response and extract words
+        cleaned = response.strip().lower()
+        if cleaned in ["yes", "no"]:
+            return cleaned == "yes"
+        
+        words = set(re.findall(r'\b\w+\b', cleaned))
+        if "no" in words:
+            return False
+        return "yes" in words
     except Exception as e:
         logger.error(f"Utility critique check failed: {e}. Defaulting to True.")
         return True
