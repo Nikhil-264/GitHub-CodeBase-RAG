@@ -1,27 +1,38 @@
 """
 RAG Graph (LangGraph)
 ======================
-Wires all agents together into a stateful graph:
+Wires all agents together into a stateful graph with CRAG and Self-RAG upgrades:
 
     Question
        │
        ▼
    Intent Agent
        │
-       ▼
-   Retrieval Agent
+       ├──► Needs Retrieval? (No) ──► Direct Answer ──► END
        │
-       ▼
-    Reranker
-       │
-       ▼
-   Analysis Agent
-       │
-       ▼
-   Answer Agent
-       │
-       ▼
-   Answer + Sources
+       └──► (Yes) ──► Retrieval Agent
+                          │
+                          ▼
+                       Reranker
+                          │
+                          ▼
+                    Grade Chunks (CRAG)
+                          │
+                          ▼
+                       Correct (CRAG Decision)
+                          │
+                          ├──► Irrelevant (Attempts < 1) ──► Rewrite & Loop to Retrieval
+                          │
+                          └──► Proceed ──► Analysis Agent
+                                               │
+                                               ▼
+                                          Answer Agent ◄──────┐ (Self-RAG Retry)
+                                               │              │
+                                               ▼              │
+                                         Self-Critique ───────┘
+                                               │
+                                               ▼
+                                              END
 """
 
 import os
@@ -43,6 +54,10 @@ from app.agents.intent_agent import classify_intent
 from app.agents.analysis_agent import analyse
 from app.agents.answer_agent import answer
 
+# Import new agents/functions
+from app.agents.grader_agent import check_need_retrieval, grade_chunk_relevance
+from app.agents.critique_agent import check_grounding, check_utility
+
 load_dotenv()
 
 BM25_INDEX_PATH = os.getenv("BM25_INDEX_PATH", "repos/bm25_index.pkl")
@@ -52,15 +67,24 @@ BM25_INDEX_PATH = os.getenv("BM25_INDEX_PATH", "repos/bm25_index.pkl")
 # ════════════════════════════════════════════════════════════
 
 class RAGState(TypedDict):
-    question         : str
-    session_id       : str                    # NEW
-    chat_history      : Optional[str]          # NEW — formatted past turns
-    intent           : Optional[str]
-    intent_meta      : Optional[dict]
-    retrieved_chunks : Optional[list]
-    reranked_chunks  : Optional[list]
-    analysis_brief   : Optional[dict]
-    final_answer     : Optional[dict]
+    question            : str
+    original_question   : Optional[str]          # Preserves original query during rewrite
+    session_id          : str
+    chat_history        : Optional[str]          # Formatted past turns
+    intent              : Optional[str]
+    intent_meta         : Optional[dict]
+    retrieved_chunks    : Optional[list]
+    reranked_chunks     : Optional[list]
+    analysis_brief      : Optional[dict]
+    final_answer        : Optional[dict]
+    # NEW fields for CRAG and Self-RAG
+    correction_attempts : int
+    critique_attempts   : int
+    needs_retrieval     : bool
+    chunk_grades        : Optional[list[str]]
+    stricter_prompt     : bool
+    needs_regeneration  : bool
+    strict_mode         : bool          # NEW — when False, skips CRAG correction + Self-RAG critique loops for speed
 
 # ════════════════════════════════════════════════════════════
 # BM25 retriever cache (loaded once per process)
@@ -86,7 +110,38 @@ def _get_bm25_retriever() -> BM25Retriever:
 @traceable(run_type="chain")
 def node_intent(state: RAGState) -> RAGState:
     result = classify_intent(state["question"])
-    return {**state, "intent": result["intent"], "intent_meta": result}
+    needs_ret = check_need_retrieval(state["question"])
+    return {
+        **state,
+        "intent": result["intent"],
+        "intent_meta": result,
+        "needs_retrieval": needs_ret,
+        "original_question": state.get("original_question") or state["question"]
+    }
+
+
+@traceable(run_type="chain")
+def node_direct_answer(state: RAGState) -> RAGState:
+    from app.agents.answer_agent import _get_llm
+    llm = _get_llm()
+    prompt = f"""You are an expert programming assistant. Answer the user's question directly.
+No codebase context is needed to answer this question.
+
+Conversation History:
+{state.get("chat_history", "") or "No previous history."}
+
+Question: {state["question"]}
+
+Answer:"""
+    response = llm.invoke(prompt).strip()
+    result = {
+        "answer": response,
+        "sources": [],
+        "chunks_used": 0,
+        "intent": state["intent"] or "explain",
+        "primary_files": [],
+    }
+    return {**state, "final_answer": result}
 
 
 @traceable(run_type="retriever")
@@ -107,6 +162,76 @@ def node_rerank(state: RAGState) -> RAGState:
 
 
 @traceable(run_type="chain")
+def node_grade_chunks(state: RAGState) -> RAGState:
+    chunks = state.get("reranked_chunks") or []
+    
+    # If not in strict mode, skip grading chunks
+    if not state.get("strict_mode", True):
+        logger.info("CRAG: strict_mode is False, skipping chunk grading.")
+        # Mark all chunks as relevant to bypass correction
+        return {**state, "chunk_grades": ["relevant"] * len(chunks)}
+
+    question = state.get("original_question") or state["question"]
+    
+    logger.info(f"CRAG: Grading {len(chunks)} chunks...")
+    grades = []
+    for c in chunks:
+        grade = grade_chunk_relevance(question, c["text"])
+        grades.append(grade)
+    
+    logger.info(f"CRAG: Chunk grades: {grades}")
+    return {**state, "chunk_grades": grades}
+
+
+@traceable(run_type="chain")
+def node_correct(state: RAGState) -> RAGState:
+    chunks = state.get("reranked_chunks") or []
+    grades = state.get("chunk_grades") or []
+    
+    # Filter only relevant or ambiguous chunks
+    filtered_chunks = []
+    for chunk, grade in zip(chunks, grades):
+        if grade in ("relevant", "ambiguous"):
+            filtered_chunks.append(chunk)
+            
+    # Check if we have any relevant chunks
+    has_relevant = len(filtered_chunks) > 0
+    
+    if not has_relevant and state["correction_attempts"] < 1:
+        # We need to retry! Rewrite query.
+        from app.agents.answer_agent import _get_llm
+        llm = _get_llm()
+        question = state.get("original_question") or state["question"]
+        prompt = f"""You are an expert query optimizer. The user is asking a question about a codebase, but initial retrieval failed to find relevant files.
+Rewrite the question to focus on code keywords, API names, functions, or specific codebase details that will improve search retrieval.
+Do not include any greeting or explanation. Only return the rewritten query.
+
+Original Question: {question}
+
+Rewritten Query:"""
+        rewritten_query = llm.invoke(prompt).strip()
+        logger.info(f"CRAG: No relevant chunks found. Rewriting query from '{question}' to '{rewritten_query}' and retrying.")
+        
+        return {
+            **state,
+            "question": rewritten_query,
+            "correction_attempts": state["correction_attempts"] + 1,
+            "retrieved_chunks": None,
+            "reranked_chunks": None,
+            "chunk_grades": None
+        }
+    else:
+        # Proceed with either filtered chunks or empty chunks
+        orig_q = state.get("original_question") or state["question"]
+        logger.info(f"CRAG: Proceeding with {len(filtered_chunks)} chunks. Restoring query to original: '{orig_q}'")
+        return {
+            **state,
+            "question": orig_q,
+            "reranked_chunks": filtered_chunks
+        }
+
+
+@traceable(run_type="chain")
 def node_analyse(state: RAGState) -> RAGState:
     brief = analyse(state["question"], state["reranked_chunks"] or [])
     return {**state, "analysis_brief": brief}
@@ -118,8 +243,71 @@ def node_answer(state: RAGState) -> RAGState:
         state["analysis_brief"] or {},
         intent       = state["intent"] or "explain",
         chat_history = state.get("chat_history", "") or "",
+        stricter     = state.get("stricter_prompt", False),
     )
     return {**state, "final_answer": result}
+
+
+@traceable(run_type="chain")
+def node_self_critique(state: RAGState) -> RAGState:
+    # If not in strict mode, skip self critique
+    if not state.get("strict_mode", True):
+        logger.info("Self-RAG: strict_mode is False, skipping self-critique.")
+        return {
+            **state,
+            "needs_regeneration": False
+        }
+
+    answer_text = state["final_answer"]["answer"] if state.get("final_answer") else ""
+    chunks = state.get("reranked_chunks") or []
+    question = state.get("original_question") or state["question"]
+    
+    # 1. Grounding check
+    grounded = check_grounding(answer_text, chunks)
+    # 2. Utility check
+    utility = check_utility(answer_text, question)
+    
+    logger.info(f"Self-RAG: Grounded={grounded}, Utility={utility}")
+    
+    if (not grounded or not utility) and state["critique_attempts"] < 1:
+        if not grounded:
+            logger.warning("Self-RAG: Hallucination detected! Retrying generation with stricter prompt.")
+        else:
+            logger.warning("Self-RAG: Answer did not address the question. Retrying generation with stricter prompt.")
+        return {
+            **state,
+            "stricter_prompt": True,
+            "needs_regeneration": True,
+            "critique_attempts": state["critique_attempts"] + 1
+        }
+    
+    return {
+        **state,
+        "needs_regeneration": False
+    }
+
+# ════════════════════════════════════════════════════════════
+# Conditional Router Functions
+# ════════════════════════════════════════════════════════════
+
+def route_after_intent(state: RAGState) -> str:
+    if not state.get("needs_retrieval", True):
+        logger.info("Self-RAG Gate: Skipping retrieval, routing to direct answer.")
+        return "direct_answer"
+    return "retrieve"
+
+
+def route_after_correct(state: RAGState) -> str:
+    # If chunk_grades is cleared, it means we are retrying retrieval
+    if state.get("chunk_grades") is None and state["correction_attempts"] > 0:
+        return "retrieve"
+    return "analyse"
+
+
+def route_after_critique(state: RAGState) -> str:
+    if state.get("needs_regeneration"):
+        return "answer"
+    return "end"
 
 # ════════════════════════════════════════════════════════════
 # Build the graph
@@ -128,18 +316,58 @@ def node_answer(state: RAGState) -> RAGState:
 def build_graph():
     graph = StateGraph(RAGState)  # type: ignore
 
-    graph.add_node("intent",   node_intent)
-    graph.add_node("retrieve", node_retrieve)
-    graph.add_node("rerank",   node_rerank)
-    graph.add_node("analyse",  node_analyse)
-    graph.add_node("answer",   node_answer)
+    graph.add_node("intent",        node_intent)
+    graph.add_node("direct_answer", node_direct_answer)
+    graph.add_node("retrieve",      node_retrieve)
+    graph.add_node("rerank",        node_rerank)
+    graph.add_node("grade_chunks",  node_grade_chunks)
+    graph.add_node("correct",       node_correct)
+    graph.add_node("analyse",       node_analyse)
+    graph.add_node("answer",        node_answer)
+    graph.add_node("self_critique", node_self_critique)
 
     graph.set_entry_point("intent")
-    graph.add_edge("intent",   "retrieve")
+    
+    # Retrieve-or-not gate
+    graph.add_conditional_edges(
+        "intent",
+        route_after_intent,
+        {
+            "retrieve": "retrieve",
+            "direct_answer": "direct_answer"
+        }
+    )
+    
+    # Direct answer flow terminates directly
+    graph.add_edge("direct_answer", END)
+
+    # Retrieval flow
     graph.add_edge("retrieve", "rerank")
-    graph.add_edge("rerank",   "analyse")
+    graph.add_edge("rerank",   "grade_chunks")
+    graph.add_edge("grade_chunks", "correct")
+    
+    # CRAG correction loop
+    graph.add_conditional_edges(
+        "correct",
+        route_after_correct,
+        {
+            "retrieve": "retrieve",
+            "analyse": "analyse"
+        }
+    )
+    
     graph.add_edge("analyse",  "answer")
-    graph.add_edge("answer",   END)
+    graph.add_edge("answer",   "self_critique")
+    
+    # Self-RAG critique loop
+    graph.add_conditional_edges(
+        "self_critique",
+        route_after_critique,
+        {
+            "answer": "answer",
+            "end": END
+        }
+    )
 
     return graph.compile()
 
@@ -151,7 +379,7 @@ def _get_graph():
     global _compiled_graph
     if _compiled_graph is None:
         _compiled_graph = build_graph()
-        logger.info("LangGraph RAG pipeline compiled")
+        logger.info("LangGraph RAG pipeline compiled with CRAG & Self-RAG")
     return _compiled_graph
 
 # ════════════════════════════════════════════════════════════
@@ -193,7 +421,7 @@ def ingest_repo(url: str) -> dict:
 
 
 @traceable(run_type="chain")
-async def query_repo(question: str, session_id: str) -> dict:
+async def query_repo(question: str, session_id: str, strict_mode: bool = True) -> dict:
     """
     Run the full LangGraph pipeline for a single question,
     with conversation history injected.
@@ -207,6 +435,7 @@ async def query_repo(question: str, session_id: str) -> dict:
 
     initial_state: RAGState = {
         "question"         : question,
+        "original_question": question,
         "session_id"       : session_id,
         "chat_history"     : history_text,
         "intent"           : None,
@@ -215,6 +444,13 @@ async def query_repo(question: str, session_id: str) -> dict:
         "reranked_chunks"  : None,
         "analysis_brief"   : None,
         "final_answer"     : None,
+        "correction_attempts": 0,
+        "critique_attempts"  : 0,
+        "needs_retrieval"    : True,
+        "chunk_grades"       : None,
+        "stricter_prompt"    : False,
+        "needs_regeneration" : False,
+        "strict_mode"        : strict_mode,
     }
 
     final_state = graph.invoke(initial_state)

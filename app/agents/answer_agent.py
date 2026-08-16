@@ -70,7 +70,7 @@ def _get_llm() -> OllamaLLM:
 # Prompt builder
 # ════════════════════════════════════════════════════════════
 
-def _build_prompt(brief: dict, intent: str, chat_history: str = "") -> str:
+def _build_prompt(brief: dict, intent: str, chat_history: str = "", stricter: bool = False) -> str:
     question        = brief["question"]
     chunks          = brief["chunks"]
     context_summary = brief["context_summary"]
@@ -84,7 +84,11 @@ def _build_prompt(brief: dict, intent: str, chat_history: str = "") -> str:
         context_parts.append(f"{header}\n```{m.get('language','')}\n{chunk['text']}\n```")
     code_context = "\n\n".join(context_parts)
 
-    prompt = f"""{_SYSTEM_PROMPT}
+    system_prompt = _SYSTEM_PROMPT
+    if stricter:
+        system_prompt += "\n\nCRITICAL: Answer using ONLY facts directly shown in the code context. Do not make assumptions, extrapolate, or bring in outside knowledge. If the code does not explicitly show it, state that it is not in the context."
+
+    prompt = f"""{system_prompt}
 
 ─── Conversation So Far ───────────────────────────────────
 {chat_history}
@@ -113,13 +117,14 @@ Answer:"""
 from langsmith import traceable
 
 @traceable(run_type="chain")
-def answer(brief: dict, intent: str = "explain", chat_history: str = "") -> dict:
+def answer(brief: dict, intent: str = "explain", chat_history: str = "", stricter: bool = False) -> dict:
     """
     Generate a final answer from the analysis brief.
 
     Args:
-        brief  : output of analysis_agent.analyse()
-        intent : classified intent string
+        brief    : output of analysis_agent.analyse()
+        intent   : classified intent string
+        stricter : whether to enforce strict factual correctness
 
     Returns:
     {
@@ -139,9 +144,9 @@ def answer(brief: dict, intent: str = "explain", chat_history: str = "") -> dict
             "primary_files" : [],
         }
 
-    prompt = _build_prompt(brief, intent, chat_history)
+    prompt = _build_prompt(brief, intent, chat_history, stricter=stricter)
 
-    logger.info(f"Generating answer | intent={intent} | chunks={len(brief['chunks'])}")
+    logger.info(f"Generating answer | intent={intent} | chunks={len(brief['chunks'])} | stricter={stricter}")
     logger.debug(f"Prompt length: {len(prompt)} chars")
 
     try:

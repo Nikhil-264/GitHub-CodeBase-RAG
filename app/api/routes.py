@@ -51,6 +51,7 @@ class IngestResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(..., description="Question about the codebase")
+    strict_mode: bool = Field(default=True, description="When False, skips CRAG correction + Self-RAG critique loops for speed")
 
 
 class QueryResponse(BaseModel):
@@ -64,6 +65,7 @@ class QueryResponse(BaseModel):
 class ChatRequest(BaseModel):
     question   : str
     session_id : str | None = None   # None → creates a new session
+    strict_mode: bool = True
 
 
 class ChatResponse(BaseModel):
@@ -100,10 +102,10 @@ def ingest(req: IngestRequest):
 @app.post("/query", response_model=QueryResponse)
 @traceable(run_type="chain")
 async def query(req: QueryRequest):
-    logger.info(f"Query: {req.question}")
+    logger.info(f"Query: {req.question} | strict_mode={req.strict_mode}")
     try:
         # Pass a dummy session ID since /query is stateless
-        result = await query_repo(req.question, "00000000-0000-0000-0000-000000000000")
+        result = await query_repo(req.question, "00000000-0000-0000-0000-000000000000", strict_mode=req.strict_mode)
         return result
     except RuntimeError as e:
         # BM25 index not built yet
@@ -121,7 +123,7 @@ async def chat(req: ChatRequest):
     await save_message(session_id, role="user", content=req.question)
 
     try:
-        result = await query_repo(req.question, session_id)
+        result = await query_repo(req.question, session_id, strict_mode=req.strict_mode)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
