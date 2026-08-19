@@ -1,40 +1,37 @@
 """
 Embedder
 ========
-Wraps Ollama's nomic-embed-text model.
+Wraps Google's Gemini embeddings API.
 Provides both single-query and batch-document embedding.
 """
 
 import os
 from loguru import logger
 from dotenv import load_dotenv
-from langchain_ollama import OllamaEmbeddings
-from typing import List, Tuple
-import httpx
-import numpy as np
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from typing import List
 
 load_dotenv()
 
 # ── Config ───────────────────────────────────────────────────
-EMBED_MODEL  = os.getenv("EMBED_MODEL",      "nomic-embed-text")
-OLLAMA_URL   = os.getenv("OLLAMA_BASE_URL",  "http://localhost:11434")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-004")
 
 # ── Singleton ────────────────────────────────────────────────
-_embedder: OllamaEmbeddings | None = None
+_embedder: GoogleGenerativeAIEmbeddings | None = None
 
-def get_embedder() -> OllamaEmbeddings:
+def get_embedder() -> GoogleGenerativeAIEmbeddings:
     """
     Return a cached embedder instance.
-    Initialized once, resuse everywhere
+    Initialized once, reuse everywhere
     """
-
     global _embedder
     if _embedder is None:
-        logger.info(f"Loading embedder : {EMBED_MODEL} at {OLLAMA_URL}")
+        api_key = os.getenv("GEMINI_API_KEY")
+        logger.info(f"Loading Google Embeddings: {EMBED_MODEL}")
 
-        _embedder = OllamaEmbeddings(
+        _embedder = GoogleGenerativeAIEmbeddings(
             model=EMBED_MODEL,
-            base_url=OLLAMA_URL,
+            google_api_key=api_key,
         )
     
     return _embedder
@@ -46,7 +43,7 @@ def embed_query(question : str) -> list[float]:
 def embed_documents(texts : list[str]) -> list[list[float]]:
     """
     Embed a list of documents in batches.
-    Ollama handles one at a time internally - we batch here to avoid sending thousands of individual requests.
+    Batching prevents API timeouts on large inputs.
     """
     embedder = get_embedder()
 

@@ -1,0 +1,35 @@
+# Project dependencies from pyproject.toml
+fastapi
+uvicorn
+langchain
+langgraph
+langchain-ollama
+langchain-google-genai
+chromadb
+gitpython
+python-dotenv
+streamlit
+tree-sitter
+tree-sitter-language-pack
+rank-bm25
+sentence-transformers
+pydantic
+loguru
+requests>=2.34.2
+tree-sitter-python>=0.25.0
+tree-sitter-javascript>=0.25.0
+tree-sitter-typescript>=0.23.2
+tree-sitter-go>=0.25.0
+tree-sitter-rust>=0.24.2
+tree-sitter-java>=0.23.5
+tree-sitter-cpp>=0.23.4
+sqlalchemy[asyncio]>=2.0.51
+asyncpg>=0.31.0
+alembic>=1.18.4
+tabulate>=0.9.0
+
+# Optional development dependencies
+pytest
+pytest-asyncio
+httpx
+ruff

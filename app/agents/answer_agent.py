@@ -15,12 +15,11 @@ Prompt structure:
 import os
 from loguru import logger
 from dotenv import load_dotenv
-from langchain_ollama import OllamaLLM
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 load_dotenv()
 
-LLM_MODEL  = os.getenv("LLM_MODEL",       "qwen3")
-OLLAMA_URL = os.getenv("OLLAMA_BASE_URL",  "http://localhost:11434")
+LLM_MODEL  = os.getenv("LLM_MODEL",       "gemini-1.5-flash")
 
 
 # ════════════════════════════════════════════════════════════
@@ -51,17 +50,17 @@ _INTENT_INSTRUCTIONS = {
 # LLM singleton
 # ════════════════════════════════════════════════════════════
 
-_llm: OllamaLLM | None = None
+_llm: ChatGoogleGenerativeAI | None = None
 
 
-def _get_llm() -> OllamaLLM:
+def _get_llm() -> ChatGoogleGenerativeAI:
     global _llm
     if _llm is None:
-        logger.info(f"Loading LLM: {LLM_MODEL} @ {OLLAMA_URL}")
-        _llm = OllamaLLM(
+        logger.info(f"Loading LLM: {LLM_MODEL}")
+        _llm = ChatGoogleGenerativeAI(
             model       = LLM_MODEL,
-            base_url    = OLLAMA_URL,
             temperature = 0.1,    # slight creativity for explanations
+            google_api_key=os.getenv("GEMINI_API_KEY")
         )
     return _llm
 

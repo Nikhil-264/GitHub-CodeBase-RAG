@@ -9,24 +9,23 @@ import os
 import re
 from loguru import logger
 from dotenv import load_dotenv
-from langchain_ollama import OllamaLLM
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langsmith import traceable
 
 load_dotenv()
 
-LLM_MODEL  = os.getenv("LLM_MODEL", "qwen3")
-OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+LLM_MODEL  = os.getenv("LLM_MODEL", "gemini-1.5-flash")
 
-_llm: OllamaLLM | None = None
+_llm: ChatGoogleGenerativeAI | None = None
 
-def _get_llm() -> OllamaLLM:
+def _get_llm() -> ChatGoogleGenerativeAI:
     global _llm
     if _llm is None:
-        logger.info(f"Grader LLM loaded: {LLM_MODEL} @ {OLLAMA_URL}")
-        _llm = OllamaLLM(
+        logger.info(f"Grader LLM loaded: {LLM_MODEL}")
+        _llm = ChatGoogleGenerativeAI(
             model=LLM_MODEL,
-            base_url=OLLAMA_URL,
             temperature=0,  # deterministic grading
+            google_api_key=os.getenv("GEMINI_API_KEY")
         )
     return _llm
 

@@ -7,7 +7,7 @@ Persistent chat UI backed by Postgres memory via /chat endpoint.
 import streamlit as st
 import requests  # type: ignore
 
-API_URL = "http://localhost:8080"
+API_URL = "http://127.0.0.1:8080"
 
 st.set_page_config(page_title="GitHub Codebase RAG", page_icon="🔍", layout="wide")
 st.title("🔍 GitHub Codebase RAG")

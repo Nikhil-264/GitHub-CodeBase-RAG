@@ -9,6 +9,7 @@ dependencies = [
     "langchain",
     "langgraph",
     "langchain-ollama",
+    "langchain-google-genai",
     "chromadb",
     "gitpython",
     "python-dotenv",

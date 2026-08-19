@@ -123,11 +123,11 @@ Intent:"""
 
 def _classify_llm(question: str) -> str:
     try:
-        from langchain_ollama import OllamaLLM
-        llm = OllamaLLM(
-            model       = os.getenv("LLM_MODEL", "qwen3"),
-            base_url    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        llm = ChatGoogleGenerativeAI(
+            model       = os.getenv("LLM_MODEL", "gemini-1.5-flash"),
             temperature = 0,
+            google_api_key=os.getenv("GEMINI_API_KEY")
         )
         prompt   = _INTENT_PROMPT.format(question=question)
         response = llm.invoke(prompt).strip().lower()
