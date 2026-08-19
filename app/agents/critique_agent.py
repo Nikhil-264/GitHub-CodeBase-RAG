@@ -71,14 +71,18 @@ def check_grounding(answer_text: str, chunks: list[dict]) -> bool:
 
     context_parts = []
     for chunk in chunks:
-        m = chunk["metadata"]
-        context_parts.append(f"File: {m['file_path']}\n{chunk['text']}")
+        m = chunk.get("metadata", {}) if isinstance(chunk, dict) else {}
+        file_path = m.get("file_path", "unknown") if isinstance(m, dict) else "unknown"
+        text = chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
+        context_parts.append(f"File: {file_path}\n{text}")
     context_text = "\n\n".join(context_parts)
 
     try:
         llm = _get_llm()
         prompt = _GROUNDING_PROMPT.format(context=context_text, answer=answer_text)
-        response = llm.invoke(prompt).strip().lower()
+        res = llm.invoke(prompt)
+        content_str = res.content if hasattr(res, "content") else str(res)
+        response = str(content_str).strip().lower()
         logger.info(f"Grounding Critique Response: '{response}'")
         
         # Clean response and extract words
@@ -103,7 +107,9 @@ def check_utility(answer_text: str, question: str) -> bool:
     try:
         llm = _get_llm()
         prompt = _UTILITY_PROMPT.format(question=question, answer=answer_text)
-        response = llm.invoke(prompt).strip().lower()
+        res = llm.invoke(prompt)
+        content_str = res.content if hasattr(res, "content") else str(res)
+        response = str(content_str).strip().lower()
         logger.info(f"Utility Critique Response: '{response}'")
         
         # Clean response and extract words

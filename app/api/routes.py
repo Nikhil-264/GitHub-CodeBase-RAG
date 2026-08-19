@@ -12,7 +12,15 @@ from loguru import logger
 from langsmith import traceable
 
 from app.graph.rag_graph import ingest_repo, query_repo
-from app.memory.session import create_session, save_message, get_full_history, list_sessions
+from app.memory.session import (
+    create_session,
+    save_message,
+    get_full_history,
+    list_sessions,
+    get_session_info,
+    bind_session_repo,
+    extract_repo_name,
+)
 from app.memory.db import init_db
 
 @asynccontextmanager
@@ -47,10 +55,12 @@ class IngestResponse(BaseModel):
     files_scanned   : int
     chunks_indexed  : int
     vector_db_stats : dict
+    session_id      : str | None = None
 
 
 class QueryRequest(BaseModel):
     question: str = Field(..., description="Question about the codebase")
+    repo_name: str | None = Field(default=None, description="Optional target repo scope")
     strict_mode: bool = Field(default=True, description="When False, skips CRAG correction + Self-RAG critique loops for speed")
 
 
@@ -65,6 +75,7 @@ class QueryResponse(BaseModel):
 class ChatRequest(BaseModel):
     question   : str
     session_id : str | None = None   # None → creates a new session
+    repo_name  : str | None = None   # Explicit target repo override
     strict_mode: bool = True
 
 
@@ -89,11 +100,13 @@ def health():
 
 @app.post("/ingest", response_model=IngestResponse)
 @traceable(run_type="chain")
-def ingest(req: IngestRequest):
+async def ingest(req: IngestRequest):
     logger.info(f"Ingest request: {req.url}")
     try:
         result = ingest_repo(req.url)
-        return result
+        # Create a new session bound to this repo URL
+        session_id = await create_session(repo_url=req.url)
+        return {**result, "session_id": session_id}
     except Exception as e:
         logger.error(f"Ingest failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -102,10 +115,15 @@ def ingest(req: IngestRequest):
 @app.post("/query", response_model=QueryResponse)
 @traceable(run_type="chain")
 async def query(req: QueryRequest):
-    logger.info(f"Query: {req.question} | strict_mode={req.strict_mode}")
+    logger.info(f"Query: {req.question} | repo_name={req.repo_name} | strict_mode={req.strict_mode}")
     try:
         # Pass a dummy session ID since /query is stateless
-        result = await query_repo(req.question, "00000000-0000-0000-0000-000000000000", strict_mode=req.strict_mode)
+        result = await query_repo(
+            req.question,
+            "00000000-0000-0000-0000-000000000000",
+            repo_name=req.repo_name,
+            strict_mode=req.strict_mode,
+        )
         return result
     except RuntimeError as e:
         # BM25 index not built yet
@@ -118,12 +136,26 @@ async def query(req: QueryRequest):
 @app.post("/chat", response_model=ChatResponse)
 @traceable(run_type="chain")
 async def chat(req: ChatRequest):
-    session_id = req.session_id or await create_session()
+    session_id = req.session_id
+    repo_name = req.repo_name
+
+    if session_id:
+        info = await get_session_info(session_id)
+        if info and not repo_name:
+            repo_name = info.get("repo_name")
+    else:
+        # Create a new session
+        session_id = await create_session()
 
     await save_message(session_id, role="user", content=req.question)
 
     try:
-        result = await query_repo(req.question, session_id, strict_mode=req.strict_mode)
+        result = await query_repo(
+            req.question,
+            session_id,
+            repo_name=repo_name,
+            strict_mode=req.strict_mode,
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -146,3 +178,14 @@ async def sessions():
 @app.get("/sessions/{session_id}/history")
 async def session_history(session_id: str):
     return await get_full_history(session_id)
+
+
+@app.post("/reset")
+async def reset():
+    from reset import reset_all
+    try:
+        await reset_all()
+        return {"status": "success", "message": "All database sessions, vector store embeddings, and repository indices cleared."}
+    except Exception as e:
+        logger.error(f"Reset failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

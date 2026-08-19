@@ -90,7 +90,9 @@ def check_need_retrieval(question: str) -> bool:
     try:
         llm = _get_llm()
         prompt = _RETRIEVE_GATE_PROMPT.format(question=question)
-        response = llm.invoke(prompt).strip().lower()
+        res = llm.invoke(prompt)
+        content_str = res.content if hasattr(res, "content") else str(res)
+        response = str(content_str).strip().lower()
         logger.info(f"Retrieve Gate Response: '{response}' for question: '{question[:60]}'")
         
         words = set(re.findall(r'\b\w+\b', response))
@@ -110,7 +112,9 @@ def grade_chunk_relevance(question: str, chunk_text: str) -> str:
     try:
         llm = _get_llm()
         prompt = _CHUNK_GRADER_PROMPT.format(question=question, chunk=chunk_text)
-        response = llm.invoke(prompt).strip().lower()
+        res = llm.invoke(prompt)
+        content_str = res.content if hasattr(res, "content") else str(res)
+        response = str(content_str).strip().lower()
         
         # Parse output using strict word boundaries to handle conversational/verbose responses
         words = set(re.findall(r'\b\w+\b', response))

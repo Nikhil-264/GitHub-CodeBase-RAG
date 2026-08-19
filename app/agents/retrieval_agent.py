@@ -72,7 +72,7 @@ def retrieve(
     else:
         # unknown intent — safe default
         logger.warning(f"Unknown intent '{intent}' — using hybrid search")
-        return hybrid_search(question, bm25_retriever, n_results=RETRIEVAL_N)
+        return hybrid_search(question, bm25_retriever, n_results=RETRIEVAL_N, filter_meta=filter_meta)
 
 
 # ════════════════════════════════════════════════════════════
@@ -94,6 +94,7 @@ def _strategy_code_search(
         n_results      = RETRIEVAL_N,
         vector_weight  = 0.4,
         bm25_weight    = 0.6,     # favour exact keyword matching
+        filter_meta    = filter_meta,
     )
 
 
@@ -112,6 +113,7 @@ def _strategy_explain(
         n_results      = RETRIEVAL_N,
         vector_weight  = 0.6,
         bm25_weight    = 0.4,
+        filter_meta    = filter_meta,
     )
 
 
@@ -130,6 +132,7 @@ def _strategy_trace_flow(
         n_results      = RETRIEVAL_N,
         vector_weight  = 0.5,
         bm25_weight    = 0.5,
+        filter_meta    = filter_meta,
     )
 
     # Keep at most 2 chunks per file so the LLM sees more files
@@ -168,6 +171,7 @@ def _strategy_debug(
         n_results      = RETRIEVAL_N,
         vector_weight  = 0.3,
         bm25_weight    = 0.7,     # heavily favour exact matches
+        filter_meta    = filter_meta,
     )
 
 

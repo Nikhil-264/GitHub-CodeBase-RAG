@@ -83,6 +83,52 @@ async def get_full_history(session_id: str) -> list[dict]:
         ]
 
 
+def extract_repo_name(repo_url: str | None) -> str | None:
+    if not repo_url:
+        return None
+    return repo_url.rstrip("/").split("/")[-1].removesuffix(".git")
+
+
+async def get_session_info(session_id: str) -> dict | None:
+    """Fetch session details including bound repo_url and repo_name."""
+    try:
+        session_uuid = uuid.UUID(session_id)
+    except ValueError:
+        return None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ChatSession).where(ChatSession.id == session_uuid)
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            return None
+        return {
+            "id": str(session.id),
+            "repo_url": session.repo_url,
+            "repo_name": extract_repo_name(session.repo_url),
+            "created_at": session.created_at.isoformat(),
+        }
+
+
+async def bind_session_repo(session_id: str, repo_url: str) -> None:
+    """Bind or update the repo_url for an existing session."""
+    try:
+        session_uuid = uuid.UUID(session_id)
+    except ValueError:
+        return
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ChatSession).where(ChatSession.id == session_uuid)
+        )
+        session = result.scalar_one_or_none()
+        if session:
+            session.repo_url = repo_url
+            await db.commit()
+            logger.info(f"Bound session {session_id} to repo: {repo_url}")
+
+
 async def list_sessions() -> list[dict]:
     """Return all chat sessions for a sidebar session picker."""
     async with AsyncSessionLocal() as db:
@@ -91,7 +137,12 @@ async def list_sessions() -> list[dict]:
         )
         sessions = result.scalars().all()
         return [
-            {"id": str(s.id), "repo_url": s.repo_url, "created_at": s.created_at.isoformat()}
+            {
+                "id": str(s.id),
+                "repo_url": s.repo_url,
+                "repo_name": extract_repo_name(s.repo_url),
+                "created_at": s.created_at.isoformat(),
+            }
             for s in sessions
         ]
 
@@ -105,4 +156,4 @@ def format_history_for_prompt(history: list[dict]) -> str:
     for turn in history:
         speaker = "User" if turn["role"] == "user" else "Assistant"
         lines.append(f"{speaker}: {turn['content']}")
-    return "\n".join(lines)
+    return "\n".join(lines)

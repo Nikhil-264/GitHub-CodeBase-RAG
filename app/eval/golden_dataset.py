@@ -132,3 +132,66 @@ GOLDEN_DATASET = [
         "expected_files": ["app/agents/answer_agent.py"]
     }
 ]
+
+# ── 6. Component Test Set: Document Grader ─────────────────────────────────
+GRADER_TEST_SET = [
+    {
+        "question": "Where is the StateGraph compiled?",
+        "chunk": "def _get_graph():\n    global _compiled_graph\n    if _compiled_graph is None:\n        _compiled_graph = build_graph()\n    return _compiled_graph",
+        "expected_grade": "relevant"
+    },
+    {
+        "question": "Where is the StateGraph compiled?",
+        "chunk": "class ChatMessage(Base):\n    __tablename__ = 'chat_messages'\n    id = Column(String, primary_key=True)",
+        "expected_grade": "irrelevant"
+    },
+    {
+        "question": "How is database schema and models set up?",
+        "chunk": "class ChatSession(Base):\n    __tablename__ = 'chat_sessions'\n    session_id = Column(String, primary_key=True)",
+        "expected_grade": "relevant"
+    },
+    {
+        "question": "How is database schema and models set up?",
+        "chunk": "def clone_repo(repo_url: str) -> str:\n    logger.info(f'Cloning {repo_url}')",
+        "expected_grade": "irrelevant"
+    }
+]
+
+# ── 7. Component Test Set: Retrieve Gate ─────────────────────────────────────
+RETRIEVE_GATE_TEST_SET = [
+    {
+        "question": "Hello, how are you today?",
+        "expected_needs_retrieval": False
+    },
+    {
+        "question": "Write a python function to compute fibonacci numbers.",
+        "expected_needs_retrieval": False
+    },
+    {
+        "question": "Where is the StateGraph compiled in this project?",
+        "expected_needs_retrieval": True
+    },
+    {
+        "question": "How does the intent agent classify user questions in app/agents/intent_agent.py?",
+        "expected_needs_retrieval": True
+    }
+]
+
+def create_llm_test_case(
+    question: str,
+    actual_output: str,
+    retrieved_context: list[str],
+    expected_output: str | None = None
+):
+    """Constructs a DeepEval LLMTestCase for evaluation metrics."""
+    try:
+        from deepeval.test_case import LLMTestCase
+        return LLMTestCase(
+            input=question,
+            actual_output=actual_output,
+            retrieved_context=retrieved_context if retrieved_context else ["No context retrieved."],
+            expected_output=expected_output or "Target answer based on repository source files."
+        )
+    except Exception as e:
+        return None
+

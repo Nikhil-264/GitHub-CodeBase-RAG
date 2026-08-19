@@ -70,6 +70,7 @@ class RAGState(TypedDict):
     question            : str
     original_question   : Optional[str]          # Preserves original query during rewrite
     session_id          : str
+    repo_name           : Optional[str]          # Target repository name for scoped retrieval
     chat_history        : Optional[str]          # Formatted past turns
     intent              : Optional[str]
     intent_meta         : Optional[dict]
@@ -87,21 +88,37 @@ class RAGState(TypedDict):
     strict_mode         : bool          # NEW — when False, skips CRAG correction + Self-RAG critique loops for speed
 
 # ════════════════════════════════════════════════════════════
-# BM25 retriever cache (loaded once per process)
+# BM25 retriever cache (loaded once per repo)
 # ════════════════════════════════════════════════════════════
 
-_bm25_retriever: BM25Retriever | None = None
+_bm25_retrievers: dict[str, BM25Retriever] = {}
+_fallback_bm25_retriever: BM25Retriever | None = None
 
-def _get_bm25_retriever() -> BM25Retriever:
-    global _bm25_retriever
-    if _bm25_retriever is None:
+def _get_bm25_retriever(repo_name: str | None = None) -> BM25Retriever:
+    global _bm25_retrievers, _fallback_bm25_retriever
+
+    if repo_name:
+        if repo_name in _bm25_retrievers:
+            return _bm25_retrievers[repo_name]
+        
+        repo_bm25_path = f"repos/bm25_{repo_name}.pkl"
+        if os.path.exists(repo_bm25_path):
+            try:
+                retriever = BM25Retriever.load(repo_bm25_path)
+                _bm25_retrievers[repo_name] = retriever
+                return retriever
+            except Exception as e:
+                logger.warning(f"Could not load BM25 index for {repo_name}: {e}")
+
+    # Fallback to general index or default
+    if _fallback_bm25_retriever is None:
         try:
-            _bm25_retriever = BM25Retriever.load(BM25_INDEX_PATH)
+            _fallback_bm25_retriever = BM25Retriever.load(BM25_INDEX_PATH)
         except FileNotFoundError:
             raise RuntimeError(
-                "BM25 index not found. Run ingest_repo() first to build it."
+                f"BM25 index not found for repo '{repo_name}'. Run ingest_repo() first to build it."
             )
-    return _bm25_retriever
+    return _fallback_bm25_retriever
 
 # ════════════════════════════════════════════════════════════
 # Graph nodes
@@ -146,11 +163,15 @@ Answer:"""
 
 @traceable(run_type="retriever")
 def node_retrieve(state: RAGState) -> RAGState:
-    bm25 = _get_bm25_retriever()
+    repo_name = state.get("repo_name")
+    filter_meta = {"repo": repo_name} if repo_name else None
+
+    bm25 = _get_bm25_retriever(repo_name)
     chunks = retrieve(
         question       = state["question"],
         intent         = state["intent"] or "explain",
         bm25_retriever = bm25,
+        filter_meta    = filter_meta,
     )
     return {**state, "retrieved_chunks": chunks}
 
@@ -390,12 +411,12 @@ def _get_graph():
 def ingest_repo(url: str) -> dict:
     """
     Full ingestion pipeline:
-    clone → scan → chunk → embed/store → build BM25 index
+    clone → scan → chunk → embed/store → build per-repo BM25 index
     """
     repo_path = clone_repo(url)
     files     = scan_repo(repo_path)
 
-    repo_name = url.rstrip("/").split("/")[-1]
+    repo_name = url.rstrip("/").split("/")[-1].removesuffix(".git")
     for f in files:
         f["repo"] = repo_name
 
@@ -405,12 +426,15 @@ def ingest_repo(url: str) -> dict:
 
     indexed = index_chunks(chunks)
 
-    # Build + persist BM25 index
+    # Build + persist per-repo BM25 index
     bm25 = BM25Retriever(chunks)
+    repo_bm25_path = f"repos/bm25_{repo_name}.pkl"
+    bm25.save(repo_bm25_path)
     bm25.save(BM25_INDEX_PATH)
 
-    global _bm25_retriever
-    _bm25_retriever = bm25   # refresh in-memory cache
+    global _bm25_retrievers, _fallback_bm25_retriever
+    _bm25_retrievers[repo_name] = bm25   # refresh in-memory cache
+    _fallback_bm25_retriever = bm25
 
     return {
         "repo"           : repo_name,
@@ -421,10 +445,15 @@ def ingest_repo(url: str) -> dict:
 
 
 @traceable(run_type="chain")
-async def query_repo(question: str, session_id: str, strict_mode: bool = True) -> dict:
+async def query_repo(
+    question: str,
+    session_id: str,
+    repo_name: str | None = None,
+    strict_mode: bool = True,
+) -> dict:
     """
     Run the full LangGraph pipeline for a single question,
-    with conversation history injected.
+    with conversation history and repository scope injected.
     """
     from app.memory.session import get_history, format_history_for_prompt
 
@@ -437,6 +466,7 @@ async def query_repo(question: str, session_id: str, strict_mode: bool = True) -
         "question"         : question,
         "original_question": question,
         "session_id"       : session_id,
+        "repo_name"        : repo_name,
         "chat_history"     : history_text,
         "intent"           : None,
         "intent_meta"      : None,

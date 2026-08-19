@@ -130,7 +130,9 @@ def _classify_llm(question: str) -> str:
             google_api_key=os.getenv("GEMINI_API_KEY")
         )
         prompt   = _INTENT_PROMPT.format(question=question)
-        response = llm.invoke(prompt).strip().lower()
+        res = llm.invoke(prompt)
+        content_str = res.content if hasattr(res, "content") else str(res)
+        response = str(content_str).strip().lower()
 
         # extract valid intent from response
         for intent in INTENTS:

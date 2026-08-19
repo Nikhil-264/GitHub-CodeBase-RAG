@@ -15,6 +15,8 @@ st.title("🔍 GitHub Codebase RAG")
 # ── Session state ────────────────────────────────────────────
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
+if "active_repo" not in st.session_state:
+    st.session_state.active_repo = None
 if "messages" not in st.session_state:
     st.session_state.messages = []   # [{"role": "user"/"assistant", "content": str, "sources": []}]
 
@@ -30,7 +32,13 @@ with st.sidebar:
                 try:
                     resp = requests.post(f"{API_URL}/ingest", json={"url": repo_url}, timeout=600)
                     if resp.ok:
-                        st.success("Repository indexed!")
+                        data = resp.json()
+                        st.success(f"Indexed repository '{data.get('repo')}'!")
+                        if data.get("session_id"):
+                            st.session_state.session_id = data["session_id"]
+                            st.session_state.active_repo = data.get("repo")
+                            st.session_state.messages = []
+                            st.rerun()
                     else:
                         st.error(resp.json().get("detail", resp.text))
                 except requests.exceptions.Timeout:
@@ -42,22 +50,46 @@ with st.sidebar:
 
     if st.button("🆕 New conversation", use_container_width=True):
         st.session_state.session_id = None
+        st.session_state.active_repo = None
         st.session_state.messages = []
         st.rerun()
+
+    if st.button("🗑️ Clear All Data (Reset)", use_container_width=True):
+        try:
+            resp = requests.post(f"{API_URL}/reset", timeout=30)
+            if resp.ok:
+                st.session_state.session_id = None
+                st.session_state.active_repo = None
+                st.session_state.messages = []
+                st.success("All chats, embeddings, and repos reset!")
+                st.rerun()
+            else:
+                st.error("Reset failed on server.")
+        except requests.exceptions.RequestException:
+            st.error("Could not reach API to reset.")
 
     st.divider()
     st.caption("Past sessions")
     try:
         sessions = requests.get(f"{API_URL}/sessions", timeout=5).json()
         for s in sessions[:10]:
-            label = f"{s['repo_url'] or 'Untitled'} — {s['created_at'][:16]}"
+            repo_label = s.get('repo_name') or s.get('repo_url') or 'Global Scope'
+            label = f"{repo_label} — {s['created_at'][:16]}"
             if st.button(label, key=s["id"], use_container_width=True):
                 st.session_state.session_id = s["id"]
+                st.session_state.active_repo = s.get("repo_name")
                 history = requests.get(f"{API_URL}/sessions/{s['id']}/history", timeout=5).json()
                 st.session_state.messages = history
                 st.rerun()
-    except requests.exceptions.ConnectionError:
-        st.caption("API not reachable")
+    except requests.exceptions.RequestException:
+        st.caption("⚠️ Backend API not reachable (start server via `python main.py`)")
+
+
+# ── Active Scope Banner ──────────────────────────────────────
+if st.session_state.active_repo:
+    st.info(f"📌 **Active Repository Scope**: `{st.session_state.active_repo}` — Search queries are strictly scoped to this repository.")
+else:
+    st.caption("ℹ️ *No repository active for this session. Ingest or select a past session to scope questions to a repository.*")
 
 
 # ── Chat history display ────────────────────────────────────
@@ -81,9 +113,16 @@ if question:
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
+                payload = {
+                    "question": question,
+                    "session_id": st.session_state.session_id,
+                }
+                if st.session_state.active_repo:
+                    payload["repo_name"] = st.session_state.active_repo
+
                 resp = requests.post(
                     f"{API_URL}/chat",
-                    json={"question": question, "session_id": st.session_state.session_id},
+                    json=payload,
                     timeout=120,
                 )
                 if resp.ok:
@@ -103,5 +142,5 @@ if question:
                     })
                 else:
                     st.error(resp.json().get("detail", resp.text))
-            except requests.exceptions.ConnectionError:
-                st.error("Could not reach the API. Is `python main.py` running?")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Could not reach the API ({e}). Is `python main.py` running?")
