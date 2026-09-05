@@ -127,7 +127,7 @@ def _get_bm25_retriever(repo_name: str | None = None) -> BM25Retriever:
 @traceable(run_type="chain")
 def node_intent(state: RAGState) -> RAGState:
     result = classify_intent(state["question"])
-    needs_ret = check_need_retrieval(state["question"])
+    needs_ret = check_need_retrieval(state["question"], has_repo=bool(state.get("repo_name")))
     return {
         **state,
         "intent": result["intent"],
