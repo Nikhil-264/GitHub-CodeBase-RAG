@@ -61,6 +61,15 @@ _AST_NODE_TYPES = {
     "impl_item",
     "function_item",
 
+    # JS/TS top-level `const`/`let`/interface/type declarations — critical for
+    # React components written as `const Foo = () => {...}` (as common as, or
+    # more common than, `function Foo() {}`), and for TS type definitions.
+    # These are frequently wrapped in export_statement — see the unwrap logic
+    # in _tier1_treesitter() below.
+    "lexical_declaration",
+    "interface_declaration",
+    "type_alias_declaration",
+
     # HTML / Markup
     "element",
     "script_element",
@@ -304,6 +313,14 @@ def _load_ts_language(language: str):
         return None
 
 
+# JS/TS wrap every top-level `export ...` (including `export default`) in one
+# of these wrapper nodes. The wrapper itself is never a function/class/const —
+# the real declaration is its first named child — so without unwrapping,
+# _AST_NODE_TYPES would have to match the wrapper type instead, and every
+# exported declaration (i.e. almost all real JS/TS code) would be invisible.
+_EXPORT_WRAPPER_TYPES = {"export_statement"}
+
+
 def _tier1_treesitter(code: str, language: str, file_meta: dict) -> list[dict]:
     ts_lang = _load_ts_language(language)
     if ts_lang is None:
@@ -322,15 +339,21 @@ def _tier1_treesitter(code: str, language: str, file_meta: dict) -> list[dict]:
 
     chunks = []
     for node in tree.root_node.children:
-        if node.type not in _AST_NODE_TYPES:
+        declaration = node
+        if node.type in _EXPORT_WRAPPER_TYPES and node.named_children:
+            declaration = node.named_children[0]
+
+        if declaration.type not in _AST_NODE_TYPES:
             continue
-        # Slice using bytes and decode
+        # Slice using bytes and decode — use the outer node's range so an
+        # `export`/`export default` keyword stays part of the chunk text,
+        # but name/type the chunk after the actual declaration.
         chunk_bytes = code_bytes[node.start_byte:node.end_byte]
         text = chunk_bytes.decode("utf-8", errors="ignore")
-        name = _get_node_name(node, code_bytes)
+        name = _get_node_name(declaration, code_bytes)
         chunks.append(_make_chunk(
             text=text, file_meta=file_meta,
-            chunk_type=node.type, chunk_name=name,
+            chunk_type=declaration.type, chunk_name=name,
             start_line=node.start_point[0] + 1,
             end_line=node.end_point[0] + 1,
             tier="tier1",
@@ -341,9 +364,18 @@ def _tier1_treesitter(code: str, language: str, file_meta: dict) -> list[dict]:
 def _get_node_name(node, code_bytes: bytes) -> str:
     # Try finding typical identifier nodes
     for child in node.children:
-        if child.type in ("identifier", "tag_name", "property_name", "key"):
+        if child.type in ("identifier", "tag_name", "property_name", "key", "type_identifier"):
             return code_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="ignore")
-            
+
+    if node.type == "lexical_declaration" and node.children:
+        # `const Foo = ...` nests its name inside a variable_declarator child
+        # rather than exposing an identifier directly.
+        for child in node.children:
+            if child.type == "variable_declarator":
+                for grandchild in child.children:
+                    if grandchild.type in ("identifier", "type_identifier"):
+                        return code_bytes[grandchild.start_byte:grandchild.end_byte].decode("utf-8", errors="ignore")
+
     # Language-specific type extraction
     if node.type == "pair" and node.children:
         # JSON/YAML key-value pair
