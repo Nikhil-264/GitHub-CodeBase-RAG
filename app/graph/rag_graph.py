@@ -150,9 +150,10 @@ Conversation History:
 Question: {state["question"]}
 
 Answer:"""
-    response = llm.invoke(prompt).strip()
+    response = llm.invoke(prompt)
+    response_text = (response.content if hasattr(response, "content") else str(response)).strip()
     result = {
-        "answer": response,
+        "answer": response_text,
         "sources": [],
         "chunks_used": 0,
         "intent": state["intent"] or "explain",
@@ -178,7 +179,7 @@ def node_retrieve(state: RAGState) -> RAGState:
 
 @traceable(run_type="tool")
 def node_rerank(state: RAGState) -> RAGState:
-    top_chunks = rerank(state["question"], state["retrieved_chunks"] or [], top_k=5)
+    top_chunks = rerank(state["question"], state["retrieved_chunks"] or [])
     return {**state, "reranked_chunks": top_chunks}
 
 
@@ -230,7 +231,8 @@ Do not include any greeting or explanation. Only return the rewritten query.
 Original Question: {question}
 
 Rewritten Query:"""
-        rewritten_query = llm.invoke(prompt).strip()
+        rewrite_response = llm.invoke(prompt)
+        rewritten_query = (rewrite_response.content if hasattr(rewrite_response, "content") else str(rewrite_response)).strip()
         logger.info(f"CRAG: No relevant chunks found. Rewriting query from '{question}' to '{rewritten_query}' and retrying.")
         
         return {

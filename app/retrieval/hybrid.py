@@ -51,7 +51,7 @@ def hybrid_search(
 
     def _chunk_key(chunk: dict) -> str:
         m = chunk["metadata"]
-        return f"{m['file_path']}::{m['start_line']}"
+        return f"{m.get('repo', '')}::{m['file_path']}::{m['start_line']}"
 
     # Score from vector results
     for rank, chunk in enumerate(vector_results):
@@ -111,7 +111,7 @@ def simple_merge(
 
     for chunk in vector_results + bm25_results:
         m   = chunk["metadata"]
-        key = f"{m['file_path']}::{m['start_line']}"
+        key = f"{m.get('repo', '')}::{m['file_path']}::{m['start_line']}"
         if key not in seen:
             seen.add(key)
             merged.append(chunk)

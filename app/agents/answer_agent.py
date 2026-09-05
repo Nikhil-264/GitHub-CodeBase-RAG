@@ -151,6 +151,7 @@ def answer(brief: dict, intent: str = "explain", chat_history: str = "", stricte
     try:
         llm      = _get_llm()
         response = llm.invoke(prompt)
+        answer_text = (response.content if hasattr(response, "content") else str(response)).strip()
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
         return {
@@ -167,7 +168,7 @@ def answer(brief: dict, intent: str = "explain", chat_history: str = "", stricte
     })
 
     result = {
-        "answer"        : response.strip(),
+        "answer"        : answer_text,
         "sources"       : sources,
         "chunks_used"   : len(brief["chunks"]),
         "intent"        : intent,
