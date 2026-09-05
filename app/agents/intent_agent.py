@@ -123,12 +123,8 @@ Intent:"""
 
 def _classify_llm(question: str) -> str:
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        llm = ChatGoogleGenerativeAI(
-            model       = os.getenv("LLM_MODEL", "gemini-1.5-flash"),
-            temperature = 0,
-            google_api_key=os.getenv("GEMINI_API_KEY")
-        )
+        from app.llm_provider import get_chat_llm
+        llm = get_chat_llm(temperature=0)
         prompt   = _INTENT_PROMPT.format(question=question)
         res = llm.invoke(prompt)
         content_str = res.content if hasattr(res, "content") else str(res)

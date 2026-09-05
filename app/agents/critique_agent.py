@@ -9,24 +9,17 @@ import os
 import re
 from loguru import logger
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langsmith import traceable
+from app.llm_provider import get_chat_llm
 
 load_dotenv()
 
-LLM_MODEL  = os.getenv("LLM_MODEL", "gemini-1.5-flash")
+_llm = None
 
-_llm: ChatGoogleGenerativeAI | None = None
-
-def _get_llm() -> ChatGoogleGenerativeAI:
+def _get_llm():
     global _llm
     if _llm is None:
-        logger.info(f"Critique LLM loaded: {LLM_MODEL}")
-        _llm = ChatGoogleGenerativeAI(
-            model=LLM_MODEL,
-            temperature=0,  # deterministic critique
-            google_api_key=os.getenv("GEMINI_API_KEY")
-        )
+        _llm = get_chat_llm(temperature=0)   # deterministic critique
     return _llm
 
 _GROUNDING_PROMPT = """You are a grader assessing if a response is grounded in / supported by a set of retrieved code chunks.

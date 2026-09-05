@@ -116,9 +116,15 @@ DATABASE_URL=postgresql+asyncpg://rag_user:rag_password@localhost:5435/rag_chat
 # Models & Paths
 CHROMA_PATH=./chroma_db
 REPOS_PATH=./repos
+
+# LLM_BACKEND / EMBED_BACKEND: "ollama" (local, private, no quota) or "gemini" (cloud)
+LLM_BACKEND=ollama
+EMBED_BACKEND=ollama
 OLLAMA_BASE_URL=http://localhost:11434
+LLM_MODEL=qwen2.5:3b
 EMBED_MODEL=nomic-embed-text
-LLM_MODEL=gemini-2.5-flash
+
+# Only needed if LLM_BACKEND or EMBED_BACKEND above is "gemini"
 GEMINI_API_KEY=your-gemini-key
 
 # Reranker

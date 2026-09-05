@@ -1,7 +1,10 @@
 """
 Embedder
 ========
-Wraps Google's Gemini embeddings API.
+Embeds documents/queries via either Google's Gemini embeddings API or a
+local Ollama instance, switched by EMBED_BACKEND — same pattern as
+app/llm_provider.py for the chat LLM and app/reranker/reranker.py's
+RERANKER_BACKEND.
 Provides both single-query and batch-document embedding.
 """
 
@@ -9,13 +12,22 @@ import os
 import time
 from loguru import logger
 from dotenv import load_dotenv
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from typing import List
 
 load_dotenv()
 
 # ── Config ───────────────────────────────────────────────────
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-004")
+EMBED_BACKEND = os.getenv("EMBED_BACKEND", "gemini")   # "gemini" or "ollama"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+_DEFAULT_EMBED_MODELS = {
+    "gemini": "text-embedding-004",
+    "ollama": "nomic-embed-text",
+}
+# Same rule as LLM_MODEL in llm_provider.py: an explicit EMBED_MODEL always
+# wins; otherwise pick the default that actually matches the active backend.
+EMBED_MODEL = os.getenv("EMBED_MODEL") or _DEFAULT_EMBED_MODELS.get(EMBED_BACKEND, _DEFAULT_EMBED_MODELS["gemini"])
+
 EMBED_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "6"))
 
 
@@ -45,23 +57,27 @@ def _call_with_retry(fn, *args, **kwargs):
             time.sleep(wait_sec)
 
 # ── Singleton ────────────────────────────────────────────────
-_embedder: GoogleGenerativeAIEmbeddings | None = None
+_embedder = None
 
-def get_embedder() -> GoogleGenerativeAIEmbeddings:
+def get_embedder():
     """
-    Return a cached embedder instance.
-    Initialized once, reuse everywhere
+    Return a cached embedder instance per EMBED_BACKEND.
+    Initialized once, reuse everywhere.
     """
     global _embedder
     if _embedder is None:
-        api_key = os.getenv("GEMINI_API_KEY")
-        logger.info(f"Loading Google Embeddings: {EMBED_MODEL}")
+        if EMBED_BACKEND == "ollama":
+            from langchain_ollama import OllamaEmbeddings
+            logger.info(f"Loading Ollama Embeddings: {EMBED_MODEL} @ {OLLAMA_BASE_URL}")
+            _embedder = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+        else:
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            logger.info(f"Loading Google Embeddings: {EMBED_MODEL}")
+            _embedder = GoogleGenerativeAIEmbeddings(
+                model=EMBED_MODEL,
+                google_api_key=os.getenv("GEMINI_API_KEY"),
+            )
 
-        _embedder = GoogleGenerativeAIEmbeddings(
-            model=EMBED_MODEL,
-            google_api_key=api_key,
-        )
-    
     return _embedder
 
 def embed_query(question : str) -> list[float]:

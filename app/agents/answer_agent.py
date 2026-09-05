@@ -15,11 +15,9 @@ Prompt structure:
 import os
 from loguru import logger
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+from app.llm_provider import get_chat_llm
 
 load_dotenv()
-
-LLM_MODEL  = os.getenv("LLM_MODEL",       "gemini-1.5-flash")
 
 
 # ════════════════════════════════════════════════════════════
@@ -50,18 +48,13 @@ _INTENT_INSTRUCTIONS = {
 # LLM singleton
 # ════════════════════════════════════════════════════════════
 
-_llm: ChatGoogleGenerativeAI | None = None
+_llm = None
 
 
-def _get_llm() -> ChatGoogleGenerativeAI:
+def _get_llm():
     global _llm
     if _llm is None:
-        logger.info(f"Loading LLM: {LLM_MODEL}")
-        _llm = ChatGoogleGenerativeAI(
-            model       = LLM_MODEL,
-            temperature = 0.1,    # slight creativity for explanations
-            google_api_key=os.getenv("GEMINI_API_KEY")
-        )
+        _llm = get_chat_llm(temperature=0.1)   # slight creativity for explanations
     return _llm
 
 
