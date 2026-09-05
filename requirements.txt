@@ -8,6 +8,7 @@ langchain-google-genai
 chromadb
 gitpython
 python-dotenv
+langsmith
 streamlit
 tree-sitter
 tree-sitter-language-pack
